@@ -11,6 +11,7 @@ import sympy
 
 from EvaluateLiquid import EvaluateLiquid
 from Item import Item
+from Args import arguments
 
 import logging
 from itertools import count
@@ -72,14 +73,15 @@ if __name__ == "__main__":
     '''
     Parameters
     '''
-
+    args = arguments()
     tamLiquid = 50
+    timeSimulate = 15
     max_evaluations = 10000  # 10000 #100000 #10000
     population_size = 100  # 50#30
     get_bests = 5
     liquid_shape = (5, 5, 2)
-    dataset_name = "Iris"
-    k = 1
+    dataset_name = args["dataset"]
+    k = args["k"]
 
     path = os.path.join(os.path.abspath(os.getcwd()), "LSM", "SpikesDatasets")
     results_path = os.path.join(os.path.abspath(os.getcwd()), "LSM", "Results")
@@ -91,49 +93,58 @@ if __name__ == "__main__":
     Experimento
     '''
     dataset = LoadDataset(path, dataset_name, k)
-    spikes_train, spikes_test, y_train, y_test = dataset.getSpikesTrain(), dataset.getSpikesTest(), dataset.getLabelsTrain(), dataset.getLabelsTest()
-    total_Classes = len(set(y_train))
+    if rank==0:
+        spikes_train, spikes_test, y_train, y_test = dataset.getSpikesTrain(), dataset.getSpikesTest(), dataset.getLabelsTrain(), dataset.getLabelsTest()
+        total_Classes = len(set(y_train))
 
-    # Neuronas de entrada
-    inpSize = len(spikes_train[0])  # 1D Coding
-    timeSimulate = 15
+        # Neuronas de entrada
+        inpSize = len(spikes_train[0])  # 1D Coding
 
-    ## Liquido Lambda
-    probabilidades = {"Cee": 0.3, "Cei": 0.2, "Cie": 0.4, "Cii": 0.1}
-    lammbda = 2
-    porc_inh_neurons = 0.2
+        ## Liquido Lambda
+        probabilidades = {"Cee": 0.3, "Cei": 0.2, "Cie": 0.4, "Cii": 0.1}
+        lammbda = 2
+        porc_inh_neurons = 0.2
 
-    # Crear liquido
-    l = liquid_feedforward(tamLiquid, inpSize)
-    # l = liquid_lambda(tamLiquid, liquid_shape, inpSize, lammbda, porc_inh_neurons, probabilidades)
+        # Crear liquido
+        l = liquid_feedforward(tamLiquid, inpSize)
+        # l = liquid_lambda(tamLiquid, liquid_shape, inpSize, lammbda, porc_inh_neurons, probabilidades)
 
-    # Parametros para conectar estimulo externo al liquido
-    conProb, low_w, high_w = 0.2, 0.00001, 1.0
+        # Parametros para conectar estimulo externo al liquido
+        conProb, low_w, high_w = 0.2, 0.00001, 1.0
 
-    # Conectar el estimulo externo a las neurona de entrada
-    l.connect_ext_stimuli_1D(len(spikes_train[0]), conProb, low_w, high_w)  # 1D Coding
+        # Conectar el estimulo externo a las neurona de entrada
+        l.connect_ext_stimuli_1D(len(spikes_train[0]), conProb, low_w, high_w)  # 1D Coding
 
-    #### Obtener evaluacion del liquido inicial
-    sgd = SGDClassifier()
-    stateVectors_Inicial, acc_ini = simularLiquido(l, spikes_train, timeSimulate, grf=False, sgd=sgd, Inicial=True,
-                                                   labels=y_train)  # 1D Coding
+        #### Obtener evaluacion del liquido inicial
+        sgd = SGDClassifier()
+        stateVectors_Inicial, acc_ini = simularLiquido(l, spikes_train, timeSimulate, grf=False, sgd=sgd, Inicial=True,
+                                                    labels=y_train)  # 1D Coding
 
-    txt_stateVector(stateVectors_Inicial, y_train, os.path.join(results_path, f'Inicial_st_Exp_{k}'))
+        txt_stateVector(stateVectors_Inicial, y_train, os.path.join(results_path, f'Inicial_st_Exp_{k}'))
 
-    # Obtener los pesos y retardos del liquido
-    pesos, delays = l.get_all_Synapses()
+        # Obtener los pesos y retardos del liquido
+        pesos, delays = l.get_all_Synapses()
 
-    total_variables = len(pesos)  # Numero de variables a manejar
-    total_objetivos = int(sympy.binomial(total_Classes, 2)) + total_Classes  # nCr <- totaldeClases C 2   + total_clases
+        total_variables = len(pesos)  # Numero de variables a manejar
+        total_objetivos = int(sympy.binomial(total_Classes, 2)) + total_Classes  # nCr <- totaldeClases C 2   + total_clases
 
-    #sol = EvaluateComponent(parameters, rank)
-    sol = EvaluateLiquid(l, spikes_train, y_train, timeSimulate)
+        #sol = EvaluateComponent(parameters, rank)
+        sol = EvaluateLiquid(l, spikes_train, y_train, timeSimulate)
+
+    l = comm.bcast(l if rank==0 else None, root=0)
+    spikes_train = comm.bcast(spikes_train if rank==0 else None, root=0)
+    spikes_test = comm.bcast(spikes_test if rank==0 else None, root=0)
+    y_train = comm.bcast(y_train if rank==0 else None, root=0) 
+    y_test = comm.bcast(y_test if rank==0 else None, root=0)
+    sol = comm.bcast(sol if rank==0 else None, root=0)
+    total_variables = comm.bcast(total_variables if rank==0 else None, root=0)
+
 
     '''
     Differential Evolution Parameters
     '''
-    de_population = 10
-    de_function_calls = 20
+    de_population = args["population"]
+    de_iterations = args["iterations"]
     de_dimensions = total_variables * 2
     de_lb = 0.0001  # -100,
     de_ub = 10.0  # 100,
@@ -153,7 +164,7 @@ if __name__ == "__main__":
         pop = [value for values in pop for value in values]
         logger.warning(EvaluateLiquid.convert(min(pop)))
 
-    for i in range(de_function_calls):
+    for i in range(de_iterations):
         pop = comm.bcast(pop, root=0)
         new_pop = []
         for ii in range(rank, de_population, size):
@@ -163,6 +174,9 @@ if __name__ == "__main__":
             j = np.random.randint(0, de_dimensions-2, size=1)
             values = np.array([v if r <= de_Cr or c == j else x for c, r, v, x in zip(count(), np.random.random(size=de_dimensions), values, pop[ii].values)])
 
+            values[values<de_lb] = de_lb
+            values[values>de_ub] = de_ub
+
             item = Item(values=values)
             item.evaluate(sol)
             new_pop.append(item if item < pop[ii] else pop[ii])
@@ -170,7 +184,7 @@ if __name__ == "__main__":
 
         if rank==0:
             pop = [value for values in pop for value in values]
-            logger.warning(f'{i}/{de_function_calls}')
+            logger.warning(f'{i}/{de_iterations}')
             logger.warning(EvaluateLiquid.convert(min(pop)))
 
     if rank == 0:
